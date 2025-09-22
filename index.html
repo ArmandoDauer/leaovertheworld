@@ -35,11 +35,11 @@
   <div id="app">
     <header>
       <h1>Mapa Interativo — Armando & Lara</h1>
-      <div class="hint">Carrega a planilha Excel automaticamente via URL</div>
+      <div class="hint">Lendo automaticamente: <code>mapa.xlsx</code></div>
     </header>
     <div id="map"></div>
 
-    <!-- Legenda fixa (canto inferior esquerdo) -->
+    <!-- Legenda fixa -->
     <div class="legend" role="note" aria-label="Legenda dos marcadores">
       <h3>Legenda</h3>
       <div class="legend-item"><span class="dot blue" aria-hidden="true"></span><span>Azul — <strong>Armando</strong></span></div>
@@ -51,12 +51,8 @@
   </div>
 
   <script>
-    /* ============================================
-       1) CONFIGURE AQUI A URL DO SEU .XLSX
-       - Ex.: arquivo hospedado no mesmo domínio do HTML
-       - Ou um link "raw" com CORS habilitado (S3, GitHub Pages, etc.)
-       ============================================ */
-    const EXCEL_URL = "https://example.com/dados.xlsx"; // <-- TROQUE POR SUA URL
+    // ===== Arquivo Excel na MESMA PASTA =====
+    const EXCEL_URL = "./mapa.xlsx";
 
     // ===== UI toast =====
     const toastEl = document.getElementById("toast");
@@ -67,11 +63,10 @@
       window.__toastTimer = setTimeout(()=>toastEl.className="toast", ms);
     }
 
-    // ===== Map =====
+    // ===== Mapa =====
     const map = L.map("map", { worldCopyJump:true, zoomSnap:0.5, zoomDelta:0.5 }).setView([20,0], 2);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>' }).addTo(map);
     const markersLayer = L.layerGroup().addTo(map);
-    const bounds = L.latLngBounds([]);
 
     function makeIcon(cls){
       return L.divIcon({ className:"", html:`<div class="pin ${cls}"></div>`, iconSize:[18,18], iconAnchor:[9,18], popupAnchor:[0,-18]});
@@ -128,10 +123,9 @@
         </div>
       `.trim();
       L.marker([lat,lng],{icon}).bindPopup(popupHTML).addTo(markersLayer);
-      bounds.extend([lat,lng]);
     }
 
-    // Geocodificação simples com cache local (se lat/lng ausentes)
+    // Geocodificação com cache local (se lat/lng ausentes)
     const GEO_CACHE_KEY="cityGeoCache_v1";
     const geoCache = JSON.parse(localStorage.getItem(GEO_CACHE_KEY)||"{}");
     async function geocodeCity(city,country){
@@ -153,6 +147,7 @@
     async function processSheet(rows){
       markersLayer.clearLayers();
       let placed=0, failures=0;
+      const bounds = L.latLngBounds([]);
       for(const row of rows){
         const low = Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).toLowerCase().trim(),v]));
         const city = (low["city"]||low["cidade"]||"").toString().trim();
@@ -164,17 +159,17 @@
         try{
           let lat=parseFloat(low["lat"]), lng=parseFloat(low["lng"]);
           if(!isFinite(lat)||!isFinite(lng)){ const c=await geocodeCity(city,country); lat=c.lat; lng=c.lng; }
-          addMarker({lat,lng,title,type,bullets}); placed++;
+          addMarker({lat,lng,title,type,bullets}); placed++; bounds.extend([lat,lng]);
         }catch(e){ console.warn(e); failures++; }
       }
-      if(placed){ try{ map.fitBounds(markersLayer.getBounds().pad(0.2)); }catch{} toast(`Pins adicionados: ${placed}` + (failures?` • Falhas: ${failures}`:""), failures?"warn":"ok"); }
+      if(placed){ try{ map.fitBounds(bounds.pad(0.2)); }catch{} toast(`Pins adicionados: ${placed}` + (failures?` • Falhas: ${failures}`:""), failures?"warn":"ok"); }
       else{ toast("Nenhum pin foi adicionado. Verifique a planilha.", "error", 5000); }
     }
 
     async function loadExcelFromUrl(url){
-      toast("Baixando planilha…");
-      const res = await fetch(url, { mode:"cors" }); // precisa de CORS ou mesma origem
-      if(!res.ok) throw new Error(`Falha ao baixar Excel (${res.status})`);
+      toast("Carregando mapa.xlsx…");
+      const res = await fetch(url); // mesma pasta / mesma origem
+      if(!res.ok) throw new Error(`Falha ao baixar mapa.xlsx (${res.status})`);
       const arr = new Uint8Array(await res.arrayBuffer());
       const wb = XLSX.read(arr, { type:"array" });
       const ws = wb.Sheets[wb.SheetNames[0]];
@@ -184,13 +179,9 @@
       await processSheet(rows);
     }
 
-    // Auto-load ao iniciar
+    // Auto-load
     (async ()=>{
       try{
-        if(!EXCEL_URL || EXCEL_URL.includes("example.com")){
-          toast("Defina EXCEL_URL para o endereço da sua planilha .xlsx", "warn", 6000);
-          return;
-        }
         await loadExcelFromUrl(EXCEL_URL);
       }catch(err){
         console.error(err);
