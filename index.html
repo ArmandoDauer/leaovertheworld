@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <title>Mapa Interativo — Armando & Lara</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <!-- SheetJS -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js"></script>
+  <style>
+    :root{--blue:#1d4ed8;--purple:#a855f7;--fg:#0f172a;--bg:#f8fafc;--card:#fff;--muted:#64748b;--success:#10b981;--warn:#f59e0b;--error:#ef4444;--shadow:0 10px 24px rgba(2,6,23,.08)}
+    html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto}
+    #app{display:grid;grid-template-rows:auto 1fr;height:100%}
+    header{display:flex;gap:12px;align-items:center;padding:14px 16px;background:linear-gradient(180deg,#fff,#fbfdff);border-bottom:1px solid #e2e8f0;box-shadow:var(--shadow);position:relative;z-index:500}
+    header h1{font-size:18px;margin:0;font-weight:700}
+    .hint{margin-left:auto;font-size:12px;color:var(--muted)}
+    #map{width:100%;height:100%}
+    .legend{position:absolute;left:12px;bottom:12px;z-index:4000;background:var(--card);border:1px solid #e2e8f0;border-radius:16px;box-shadow:var(--shadow);padding:10px 12px;min-width:180px;backdrop-filter:blur(4px)}
+    .legend h3{margin:0 0 8px 0;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+    .legend-item{display:grid;grid-template-columns:20px 1fr;gap:8px;align-items:center;padding:6px 2px}
+    .dot{width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #cbd5e1 inset}
+    .dot.blue{background:var(--blue)} .dot.purple{background:var(--purple)}
+    .dot.both{background:linear-gradient(90deg,var(--blue) 0 50%,var(--purple) 50% 100%)}
+    .pin{width:18px;height:18px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;box-shadow:0 2px 8px rgba(2,6,23,.25);position:relative}
+    .pin::after{content:"";position:absolute;width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.8);top:4px;left:4px;transform:rotate(45deg)}
+    .pin.blue{background:var(--blue)} .pin.purple{background:var(--purple)}
+    .pin.both{background:linear-gradient(135deg,var(--blue) 0 50%,var(--purple) 50% 100%)}
+    .toast{position:absolute;right:12px;bottom:12px;z-index:4000;background:var(--card);border:1px solid #e2e8f0;border-left:6px solid var(--success);border-radius:14px;padding:10px 12px;box-shadow:var(--shadow);min-width:240px;display:none}
+    .toast.show{display:block} .toast.warn{border-left-color:var(--warn)} .toast.error{border-left-color:var(--error)} .toast p{margin:0;font-size:13px}
+  </style>
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>Mapa Interativo — Armando & Lara</h1>
+      <div class="hint">Carrega a planilha Excel automaticamente via URL</div>
+    </header>
+    <div id="map"></div>
+
+    <!-- Legenda fixa (canto inferior esquerdo) -->
+    <div class="legend" role="note" aria-label="Legenda dos marcadores">
+      <h3>Legenda</h3>
+      <div class="legend-item"><span class="dot blue" aria-hidden="true"></span><span>Azul — <strong>Armando</strong></span></div>
+      <div class="legend-item"><span class="dot purple" aria-hidden="true"></span><span>Lilás — <strong>Lara</strong></span></div>
+      <div class="legend-item"><span class="dot both" aria-hidden="true"></span><span>Combinação — <strong>Lara &amp; Armando</strong></span></div>
+    </div>
+
+    <div id="toast" class="toast"><p></p></div>
+  </div>
+
+  <script>
+    /* ============================================
+       1) CONFIGURE AQUI A URL DO SEU .XLSX
+       - Ex.: arquivo hospedado no mesmo domínio do HTML
+       - Ou um link "raw" com CORS habilitado (S3, GitHub Pages, etc.)
+       ============================================ */
+    const EXCEL_URL = "https://example.com/dados.xlsx"; // <-- TROQUE POR SUA URL
+
+    // ===== UI toast =====
+    const toastEl = document.getElementById("toast");
+    function toast(msg, type="ok", ms=3500){
+      toastEl.querySelector("p").textContent = msg;
+      toastEl.className = "toast show" + (type==="warn"?" warn":type==="error"?" error":"");
+      clearTimeout(window.__toastTimer);
+      window.__toastTimer = setTimeout(()=>toastEl.className="toast", ms);
+    }
+
+    // ===== Map =====
+    const map = L.map("map", { worldCopyJump:true, zoomSnap:0.5, zoomDelta:0.5 }).setView([20,0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>' }).addTo(map);
+    const markersLayer = L.layerGroup().addTo(map);
+    const bounds = L.latLngBounds([]);
+
+    function makeIcon(cls){
+      return L.divIcon({ className:"", html:`<div class="pin ${cls}"></div>`, iconSize:[18,18], iconAnchor:[9,18], popupAnchor:[0,-18]});
+    }
+    const ICONS = { Armando: makeIcon("blue"), Lara: makeIcon("purple"), Both: makeIcon("both") };
+
+    function normalizeType(vRaw){
+      if(!vRaw) return "Both";
+      const v=String(vRaw).trim().toLowerCase();
+      if(["armando","azul","blue"].includes(v)) return "Armando";
+      if(["lara","lilas","lilás","roxo","purple"].includes(v)) return "Lara";
+      if(["ambos","both","lara & armando","lara e armando"].includes(v)) return "Both";
+      if(v.includes("arm") && v.includes("lar")) return "Both";
+      return "Both";
+    }
+
+    function escapeHTML(s){
+      return String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
+    }
+
+    function extractBullets(row){
+      const bullets=[];
+      for(const key in row){
+        if(String(key).toLowerCase().trim()==="bullets" && row[key]){
+          String(row[key]).split(";").map(s=>s.trim()).filter(Boolean).forEach(p=>bullets.push(p));
+        }
+      }
+      const keys = Object.keys(row);
+      const mapLower = Object.fromEntries(keys.map(k=>[k.toLowerCase().trim(),k]));
+      let n=1;
+      while(mapLower[`date${n}`] || mapLower[`desc${n}`]){
+        const dK = mapLower[`date${n}`], tK = mapLower[`desc${n}`];
+        const d = dK? String(row[dK]).trim() : "";
+        const t = tK? String(row[tK]).trim() : "";
+        if(d || t) bullets.push([d,t].filter(Boolean).join(": "));
+        n++;
+      }
+      if(bullets.length===0){
+        const dK = keys.find(k=>k.toLowerCase().trim()==="date");
+        const tK = keys.find(k=>k.toLowerCase().trim().startsWith("desc"));
+        if(dK || tK) bullets.push([row[dK]||"", row[tK]||""].filter(Boolean).join(": "));
+      }
+      return bullets;
+    }
+
+    function addMarker({lat,lng,title,type,bullets}){
+      const tnorm = normalizeType(type);
+      const icon = ICONS[tnorm] || ICONS.Both;
+      const popupHTML = `
+        <div style="min-width:220px">
+          <div style="font-weight:700; margin-bottom:6px">${escapeHTML(title||"Local")}</div>
+          ${bullets?.length ? `<ul style="margin:0 0 4px 18px; padding:0">${bullets.map(b=>`<li>${escapeHTML(b)}</li>`).join("")}</ul>` : `<div style="color:#64748b">Sem detalhes</div>`}
+          <div style="font-size:11px; color:#94a3b8; margin-top:6px">${tnorm}</div>
+        </div>
+      `.trim();
+      L.marker([lat,lng],{icon}).bindPopup(popupHTML).addTo(markersLayer);
+      bounds.extend([lat,lng]);
+    }
+
+    // Geocodificação simples com cache local (se lat/lng ausentes)
+    const GEO_CACHE_KEY="cityGeoCache_v1";
+    const geoCache = JSON.parse(localStorage.getItem(GEO_CACHE_KEY)||"{}");
+    async function geocodeCity(city,country){
+      const q=[city,country].filter(Boolean).join(", ");
+      if(geoCache[q]) return geoCache[q];
+      const url = new URL("https://nominatim.openstreetmap.org/search");
+      url.searchParams.set("q", q);
+      url.searchParams.set("format","json"); url.searchParams.set("limit","1"); url.searchParams.set("addressdetails","0");
+      await new Promise(r=>setTimeout(r,1000)); // rate limit
+      const res = await fetch(url.toString(), { headers:{Accept:"application/json"} });
+      if(!res.ok) throw new Error("Falha na geocodificação ("+res.status+")");
+      const data = await res.json();
+      if(!data?.[0]) throw new Error("Local não encontrado: "+q);
+      const coords = {lat:parseFloat(data[0].lat), lng:parseFloat(data[0].lon)};
+      geoCache[q]=coords; localStorage.setItem(GEO_CACHE_KEY, JSON.stringify(geoCache));
+      return coords;
+    }
+
+    async function processSheet(rows){
+      markersLayer.clearLayers();
+      let placed=0, failures=0;
+      for(const row of rows){
+        const low = Object.fromEntries(Object.entries(row).map(([k,v])=>[String(k).toLowerCase().trim(),v]));
+        const city = (low["city"]||low["cidade"]||"").toString().trim();
+        const country = (low["country"]||low["pais"]||low["país"]||"").toString().trim();
+        const type = low["type"]||low["tipo"]||"";
+        const title = [city,country].filter(Boolean).join(", ") || (low["title"]||low["título"]||"Local");
+        if(!city && !(low["lat"] && low["lng"])) { failures++; continue; }
+        const bullets = extractBullets(row);
+        try{
+          let lat=parseFloat(low["lat"]), lng=parseFloat(low["lng"]);
+          if(!isFinite(lat)||!isFinite(lng)){ const c=await geocodeCity(city,country); lat=c.lat; lng=c.lng; }
+          addMarker({lat,lng,title,type,bullets}); placed++;
+        }catch(e){ console.warn(e); failures++; }
+      }
+      if(placed){ try{ map.fitBounds(markersLayer.getBounds().pad(0.2)); }catch{} toast(`Pins adicionados: ${placed}` + (failures?` • Falhas: ${failures}`:""), failures?"warn":"ok"); }
+      else{ toast("Nenhum pin foi adicionado. Verifique a planilha.", "error", 5000); }
+    }
+
+    async function loadExcelFromUrl(url){
+      toast("Baixando planilha…");
+      const res = await fetch(url, { mode:"cors" }); // precisa de CORS ou mesma origem
+      if(!res.ok) throw new Error(`Falha ao baixar Excel (${res.status})`);
+      const arr = new Uint8Array(await res.arrayBuffer());
+      const wb = XLSX.read(arr, { type:"array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval:"" });
+      if(!rows.length) throw new Error("Aba vazia no Excel.");
+      toast("Processando dados…");
+      await processSheet(rows);
+    }
+
+    // Auto-load ao iniciar
+    (async ()=>{
+      try{
+        if(!EXCEL_URL || EXCEL_URL.includes("example.com")){
+          toast("Defina EXCEL_URL para o endereço da sua planilha .xlsx", "warn", 6000);
+          return;
+        }
+        await loadExcelFromUrl(EXCEL_URL);
+      }catch(err){
+        console.error(err);
+        toast((err && err.message) ? err.message : "Erro ao carregar a planilha.", "error", 6000);
+      }
+    })();
+  </script>
+</body>
+</html>
