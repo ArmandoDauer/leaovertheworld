@@ -7,17 +7,16 @@
   <!-- Leaflet -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
   <style>
     :root{--blue:#1d4ed8;--purple:#a855f7;--fg:#0f172a;--bg:#f8fafc;--card:#fff;--muted:#64748b;--shadow:0 10px 24px rgba(2,6,23,.08)}
     html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto}
-    #map{width:100%;height:100vh;}
+    #map{width:100%;height:100vh}
     /* Pins */
     .pin{width:18px;height:18px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;position:relative;box-shadow:0 2px 8px rgba(2,6,23,.25)}
     .pin.blue{background:var(--blue)} .pin.purple{background:var(--purple)}
     .pin.both{background:linear-gradient(135deg,var(--blue) 0 50%,var(--purple) 50% 100%)}
     .pin::after{content:"";position:absolute;width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.85);top:4px;left:4px;transform:rotate(45deg)}
-    /* Legenda */
+    /* Legenda fixa */
     .legend{position:fixed;left:12px;bottom:12px;z-index:4000;background:var(--card);border:1px solid #e2e8f0;border-radius:16px;box-shadow:var(--shadow);padding:10px 12px;min-width:200px}
     .legend h3{margin:0 0 8px 0;font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
     .legend-item{display:grid;grid-template-columns:20px 1fr;gap:8px;align-items:center;padding:6px 2px}
@@ -29,7 +28,7 @@
 <body>
   <div id="map"></div>
 
-  <!-- Legenda fixa -->
+  <!-- Legenda -->
   <div class="legend" role="note" aria-label="Legenda dos marcadores">
     <h3>Legenda</h3>
     <div class="legend-item"><span class="dot blue"></span><span>Azul — <strong>Armando</strong></span></div>
@@ -38,95 +37,66 @@
   </div>
 
   <script>
-    const EXCEL_URL = "mapa.xlsx"; // mesma pasta
-    const XLSX_CDNS = [
-      "https://cdn.jsdelivr.net/npm/xlsx@0.20.3/dist/xlsx.full.min.js",
-      "https://unpkg.com/xlsx@0.20.3/dist/xlsx.full.min.js",
-      "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.20.3/xlsx.full.min.js"
+    /* ============================================================
+       EDITE AQUI: lista de locais (simples e direto)
+       Campos:
+         city, country (texto)
+         lat, lng (número)
+         type: "Armando" | "Lara" | "Lara & Armando"
+         bullets: array de strings (opcional)
+       Para adicionar: copie um bloco e altere os valores.
+    ============================================================ */
+    const LOCATIONS = [
+      {
+        city: "Bordeaux", country: "França",
+        lat: 44.8378, lng: -0.5792,
+        type: "Lara & Armando",
+        bullets: ["2023-05-10: Evento A", "2023-07-22: Encontro com equipe"]
+      },
+      {
+        city: "Leipzig", country: "Alemanha",
+        lat: 51.3397, lng: 12.3731,
+        type: "Armando",
+        bullets: ["2024-02-01: Reunião", "2024-03-10: Apresentação"]
+      },
+      {
+        city: "Fernando de Noronha", country: "Brasil",
+        lat: -3.8570, lng: -32.4290,
+        type: "Lara",
+        bullets: ["2024-04-18: Seminário", "2024-05-05: Visita técnica"]
+      }
     ];
 
-    function loadScript(src){
-      return new Promise((resolve, reject)=>{
-        const s = document.createElement("script");
-        s.src = src;
-        s.async = true;
-        s.onload = ()=>resolve(src);
-        s.onerror = ()=>reject(new Error("Falha ao carregar: "+src));
-        document.head.appendChild(s);
-      });
-    }
+    // --- Mapa ---
+    const map = L.map("map").setView([20,0], 2);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OSM" }).addTo(map);
+    const markersLayer = L.layerGroup().addTo(map);
 
-    async function ensureXLSX(){
-      if (window.XLSX) return "pré-carregado";
-      let lastErr;
-      for (const src of XLSX_CDNS){
-        try{
-          console.log("[XLSX] tentando:", src);
-          await loadScript(src);
-          if (window.XLSX){
-            console.log("[XLSX] ok via", src);
-            return src;
-          }
-        }catch(e){
-          console.warn(e);
-          lastErr = e;
-        }
-      }
-      throw lastErr || new Error("Não foi possível carregar o SheetJS (XLSX).");
-    }
-
+    // Ícones
     function makeIcon(cls){return L.divIcon({className:"",html:`<div class="pin ${cls}"></div>`,iconSize:[18,18],iconAnchor:[9,18],popupAnchor:[0,-18]});}
-    const ICONS = { Armando: makeIcon("blue"), Lara: makeIcon("purple"), "Lara & Armando": makeIcon("both") };
+    const ICONS = { "Armando": makeIcon("blue"), "Lara": makeIcon("purple"), "Lara & Armando": makeIcon("both") };
+
     function escapeHTML(s){ return String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;"); }
 
-    function addMarker(map, row){
-      const title = [row.city, row.country].filter(Boolean).join(", ");
-      const icon = ICONS[row.type] || ICONS["Lara & Armando"];
-      const bullets = String(row.bullets||"").split(";").map(s=>s.trim()).filter(Boolean);
+    function addMarker(loc){
+      const icon = ICONS[loc.type] || ICONS["Lara & Armando"];
+      const title = [loc.city, loc.country].filter(Boolean).join(", ");
+      const bullets = Array.isArray(loc.bullets) ? loc.bullets : [];
       const popup = `
         <div style="min-width:220px">
           <div style="font-weight:700;margin-bottom:6px">${escapeHTML(title||"Local")}</div>
           ${bullets.length ? `<ul style="margin:0 0 4px 18px;padding:0">${bullets.map(b=>`<li>${escapeHTML(b)}</li>`).join("")}</ul>` : `<div style="color:#64748b">Sem detalhes</div>`}
-          <div style="font-size:11px;color:#94a3b8;margin-top:6px">${escapeHTML(row.type||"")}</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:6px">${escapeHTML(loc.type)}</div>
         </div>`;
-      L.marker([+row.lat, +row.lng], {icon}).bindPopup(popup).addTo(map);
+      L.marker([+loc.lat, +loc.lng], {icon}).bindPopup(popup).addTo(markersLayer);
     }
 
-    async function loadAndRender(){
-      const map = L.map("map").setView([20,0], 2);
-      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OSM" }).addTo(map);
-
-      // 1) Garante o SheetJS carregado
-      await ensureXLSX();
-
-      // 2) Baixa a planilha
-      const res = await fetch(EXCEL_URL);
-      console.log("[fetch]", res.url, res.status, res.headers.get("content-type"));
-      if(!res.ok) throw new Error("Falha ao baixar mapa.xlsx ("+res.status+") — confira o caminho no Pages.");
-      const arr = new Uint8Array(await res.arrayBuffer());
-
-      // 3) Lê XLSX
-      const wb = XLSX.read(arr, { type:"array" });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, { defval:"" });
-      if(!rows.length) throw new Error("Aba vazia no Excel.");
-
-      // 4) Plota
-      rows.forEach(r=>addMarker(map, r));
-      try{
-        const bounds = L.latLngBounds(rows.map(r=>[+r.lat, +r.lng]));
-        if(bounds.isValid()) map.fitBounds(bounds.pad(0.2));
-      }catch(e){}
-    }
-
-    (async ()=>{
-      try{
-        await loadAndRender();
-      }catch(err){
-        console.error(err);
-        alert("Erro ao carregar a planilha: " + (err && err.message ? err.message : err));
-      }
-    })();
+    // Render
+    LOCATIONS.forEach(addMarker);
+    try{
+      const bounds = L.latLngBounds(LOCATIONS.map(l => [l.lat, l.lng]));
+      if(bounds.isValid()) map.fitBounds(bounds.pad(0.2));
+    }catch(e){}
   </script>
 </body>
 </html>
